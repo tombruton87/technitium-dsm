@@ -1,0 +1,35 @@
+# Technitium DNS Server, as the Synology package runs it: the compose project in
+# the technitium shared folder. The setup container writes .env beside this.
+# Settings, zones, blocklists and statistics live in the technitium_config
+# volume; backups go to the share.
+services:
+  server:
+    image: ${TN_IMAGE:-technitium/dns-server:15.6.1}
+    container_name: technitium-server
+    hostname: ${TN_HOSTNAME:-dns-server}
+    restart: unless-stopped
+    ports:
+      # DNS for your network: devices (or your router) are pointed at this Synology's address.
+      - "${DNS_PORT:-53}:53/tcp"
+      - "${DNS_PORT:-53}:53/udp"
+      # Technitium's web console: HTTP inside on 5380, or HTTPS on 53443 when the package turns it on.
+      - "${HTTP_PORT:-5380}:${INNER_PORT:-5380}"
+    volumes:
+      - config:/etc/dns
+    environment:
+      TZ: ${TZ:-UTC}
+      DNS_SERVER_DOMAIN: ${TN_HOSTNAME:-dns-server}
+      # Read at the very first start only: a throwaway password the package replaces at once, then deletes.
+      DNS_SERVER_ADMIN_PASSWORD_FILE: /etc/dns/first-password
+      DNS_SERVER_LOG_USING_LOCAL_TIME: "true"
+    sysctls:
+      - net.ipv4.ip_local_port_range=1024 65000
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://127.0.0.1:5380/ >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  config:

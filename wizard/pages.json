@@ -1,0 +1,18 @@
+, {
+    "step_title": "Technitium DNS Server",
+    "items": [{
+        "type": "textfield",
+        "desc": "Technitium answers DNS for your network on port 53, the port every router and device expects. It must be free on this Synology: if DSM's DNS Server package is installed, stop it first. $(in_use 53 && echo "<br><br><b>Port 53 is in use on this Synology right now</b> — usually by DSM’s DNS Server package. Stop it (Package Center → DNS Server → Stop) before Technitium starts, or it can’t answer.") The admin password is made at the first start and shown once in the Technitium window in DSM.",
+        "subitems": [
+            { "key": "wizard_dns_port", "desc": "DNS port", "defaultValue": "53", "validator": { "allowBlank": false, "regex": { "expr": "/^[0-9]{2,5}\$/", "errorText": "A port number — 53 unless you know why not" } } }
+        ]
+    }, {
+        "type": "singleselect",
+        "desc": "HTTPS for Technitium's web console. It can be switched later in the window.",
+        "subitems": [
+            { "key": "wizard_tls_off", "desc": "Plain HTTP (on your own network, or behind DSM's reverse proxy)", "defaultValue": true },
+            { "key": "wizard_tls_dsm", "desc": "HTTPS with DSM's certificate: the system default from Control Panel → Security → Certificate", "defaultValue": false },
+            { "key": "wizard_tls_self", "desc": "HTTPS with a self-signed certificate made by the package (browsers warn once)", "defaultValue": false }
+        ]
+    }]
+}

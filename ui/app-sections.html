@@ -1,0 +1,61 @@
+    <section data-page="blocking" hidden>
+      <div class="note">What <a class="tn-link" href="#" target="_blank" rel="noopener">Technitium</a> answered and blocked in the last 24 hours, for every device that uses it for DNS. A site broken? Pause blocking for a few minutes, or always allow it below.</div>
+      <div class="tiles" id="bl-tiles"></div>
+      <div class="card"><div class="in"><p><span id="bl-state"></span></p>
+        <p id="bl-acts" class="row"></p></div></div>
+      <div class="card"><h2>Blocklists</h2><table><thead><tr><th>List</th><th class="n"></th></tr></thead><tbody id="ls-lists"></tbody></table>
+        <div class="in">
+        <label class="f"><span>Add a blocklist</span><input type="text" id="ls-url" placeholder="https://… — a list in hosts, domains or AdBlock format"></label>
+        <p><button class="btn" id="ls-add" data-app>Add</button> <button class="btn primary" data-act="listupdate">Fetch the lists now</button> <span class="muted small" id="ls-when"></span></p></div></div>
+      <div class="card"><h2>Your sites</h2><table><thead><tr><th>Site</th><th></th><th class="n"></th></tr></thead><tbody id="ls-domains"></tbody></table>
+        <div class="in">
+        <label class="f"><span>Site</span><input type="text" id="dm-name" placeholder="ads.example.com — this name and everything under it"></label>
+        <p><button class="btn" id="dm-allow" data-app>Always allow</button> <button class="btn" id="dm-block" data-app>Always block</button></p></div></div>
+      <div class="card"><h2>Blocked most (last 24 hours)</h2><table><tbody id="bl-top"></tbody></table></div>
+    </section>
+
+    <section data-page="zones" hidden>
+      <div class="note">Names Technitium answers itself, for your whole network: give the NAS, a printer or a camera a name like <b>nas.home</b> instead of an IP address. A name in a zone that doesn't exist yet makes the zone (nas.home → zone <b>home</b>).</div>
+      <div class="card"><h2>Add a name</h2><div class="in">
+        <div class="row3">
+          <label class="f"><span>Name</span><input type="text" id="rc-name" placeholder="nas.home"></label>
+          <label class="f" style="flex:0 1 150px"><span>Type</span><select id="rc-type"><option value="A">A — IPv4 address</option><option value="AAAA">AAAA — IPv6 address</option><option value="CNAME">CNAME — another name</option></select></label>
+          <label class="f"><span>Points at</span><input type="text" id="rc-value" placeholder="192.168.1.20"></label>
+        </div>
+        <p><button class="btn primary" id="rc-add" data-app>Add</button> <span class="muted small">An existing A, AAAA or CNAME of that name is replaced.</span></p></div></div>
+      <div class="card"><h2>Your zones</h2><table><thead><tr><th>Name</th><th>Type</th><th>Points at</th><th class="n"></th></tr></thead><tbody id="zn-list"></tbody></table></div>
+    </section>
+
+    <section data-page="resolvers" hidden>
+      <div class="note">For everything it doesn't block or answer itself, Technitium either asks an upstream DNS service (forwarding) or finds the answer on its own from the internet's root servers (recursive). Answers are cached either way.</div>
+      <div class="card"><h2>How Technitium finds answers</h2><div class="in">
+        <label class="f"><span>Mode</span><select id="rv-mode"><option value="forward">Forward to a DNS service</option><option value="recursive">Recursive — Technitium resolves by itself</option></select></label>
+        <div id="rv-fwd">
+          <label class="f"><span>Service</span><select id="rv-up"><option value="cloudflare">Cloudflare (1.1.1.1) — fast, private</option><option value="quad9">Quad9 (9.9.9.9) — also blocks known malware</option><option value="google">Google (8.8.8.8)</option><option value="custom">Others… (plain DNS)</option></select></label>
+          <label class="f" id="rv-proto-row"><span>Protocol</span><select id="rv-proto"><option value="https">Encrypted — DNS-over-HTTPS</option><option value="tls">Encrypted — DNS-over-TLS (port 853)</option><option value="udp">Plain DNS (port 53, not encrypted)</option></select></label>
+          <label class="f" id="rv-custom-row"><span>DNS servers</span><input type="text" id="rv-custom" placeholder="e.g. 192.168.1.1 — up to two, separated by a space"></label>
+        </div>
+        <p class="muted small" id="rv-hint"></p>
+        <button class="btn" id="rv-save" data-app>Save</button></div></div>
+      <div class="card"><h2>In use now</h2><table><tbody id="rv-now"></tbody></table></div>
+    </section>
+
+    <section data-page="setup" hidden>
+      <div class="note">Technitium only sees the devices that use it for DNS. The easy way is to tell your router — then every device on the network uses it.</div>
+      <div class="card"><h2>Point your network at Technitium</h2><div class="in">
+        <p>DNS server: <span class="url" id="su-dns"></span></p>
+        <ol class="steps muted small">
+          <li>In your router's settings, find <b>DHCP</b> or <b>LAN</b> → <b>DNS server</b>, and enter the address above as the only DNS server (a second one would let ads through, and its answers wouldn't know your local names).</li>
+          <li>Reserve this Synology's address in the router's DHCP settings, so it never changes.</li>
+          <li>Reconnect a phone or restart a computer so it picks up the change; the numbers on the Blocking tab start to move.</li>
+          <li>Can't change the router? Set the DNS server on each device instead (Wi-Fi settings → DNS → manual).</li>
+        </ol>
+        <p class="muted small" id="su-port"></p>
+        <p class="muted small">Keep DHCP on your router. Technitium has a DHCP server of its own, but the package doesn't open its port.</p></div></div>
+      <div class="card"><h2>Encrypted DNS (DoH, DoT)</h2><div class="in">
+        <p class="muted small">Lookups from your devices to this Synology stay on your own network, as plain DNS — like with any router. The step that leaves your home, from Technitium to the internet, is encrypted when the Resolvers tab says DNS-over-HTTPS or DNS-over-TLS (the default), or avoided entirely in recursive mode.</p>
+        <p class="muted small">Technitium can also serve DNS-over-HTTPS and DNS-over-TLS to devices (Android's Private DNS, for instance), but that needs a domain name with a trusted certificate and more ports open; the package doesn't set it up. Its web console has the settings if you want to.</p></div></div>
+      <div class="card"><h2>Technitium's password</h2><div class="in">
+        <p class="muted small">For Technitium's own web console (user <b>admin</b>). Lost it? Make a new one — shown once. The package uses an API token of its own, so the window keeps working.</p>
+        <button class="btn" data-act="newpw" data-confirm="Make a new password for Technitium's admin? The old one stops working.">New password</button></div></div>
+    </section>
