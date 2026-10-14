@@ -47,8 +47,17 @@ DNS_PROTO='$p'
 CUSTOM_DNS='$c'" ;;
   esac
 }
-app_cgi_settings() {   # body → appends TLS to $lines, or errors
-  local tls; tls=$(param tls "$1")
+app_cgi_settings() {   # body → appends TLS and NET_MODE to $lines, or errors
+  local tls net; tls=$(param tls "$1"); net=$(param net "$1")
+  if [[ -n "$net" ]]; then
+    [[ "$net" =~ ^(host|bridge)$ ]] || error "400 Bad Request" "The network is the NAS's own (host) or Docker's (bridge)."
+    # On the NAS's own network the console can't share its port with the package's HTTPS (the core doesn't stop
+    # on a refusal from the setup side, so it's refused here, before the request is written).
+    local cur; cur=$(jq -r '.app.tls.mode // "off"' "$VAR/status.json" 2>/dev/null); cur=${cur:-off}
+    [[ "$net" == host && "${tls:-$cur}" != off ]] && error "409 Conflict" "On the NAS's own network, Technitium's console can't share its port with the package's HTTPS. Turn HTTPS off (DSM's reverse proxy can still add it), or keep Docker's network."
+    lines="$lines
+NET_MODE='$net'"
+  fi
   [[ -z "$tls" ]] && return 0
   [[ "$tls" =~ ^(dsm|self|off)$ ]] || error "400 Bad Request" "HTTPS is DSM's certificate, self-signed, or off."
   lines="$lines

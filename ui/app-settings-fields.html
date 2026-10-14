@@ -1,3 +1,7 @@
+        <label class="f"><span>Network</span><select id="set-net">
+          <option value="host">The NAS's own network — Technitium sees each device's address (recommended)</option>
+          <option value="bridge">Docker's network — every device shows as Docker's gateway</option>
+        </select><span class="hint">Changing it makes Technitium's container again; DNS is away for a few seconds. On the NAS's own network, HTTPS below must be off.</span></label>
         <label class="f"><span>HTTPS</span><select id="set-tls">
           <option value="off">Off — plain HTTP (on your own network, or behind DSM's reverse proxy)</option>
           <option value="dsm">On — DSM's certificate (the system default)</option>

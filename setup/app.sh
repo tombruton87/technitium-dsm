@@ -20,6 +20,7 @@ app_validate() {   # key value → 0 if the value has the key's shape
   case "$1" in
     DNS_PORT)   [[ "$2" =~ ^[0-9]{2,5}$ ]] && (( 10#$2 >= 1 && 10#$2 <= 65535 )) ;;
     TLS)        [[ "$2" =~ ^(dsm|self|off)$ ]] ;;
+    NET_MODE)   [[ "$2" =~ ^(host|bridge)$ ]] ;;
     PAUSE_MIN)  [[ "$2" =~ ^(5|30|60)$ ]] ;;
     URL_B64)    [[ "$2" =~ ^[A-Za-z0-9_-]+$ ]] && (( ${#2} <= 700 )) ;;
     KIND)       [[ "$2" =~ ^(allow|block)$ ]] ;;
@@ -40,7 +41,47 @@ b64d() { local s=${1//-/+}; s=${s//_//}; while (( ${#s} % 4 )); do s="$s="; done
 strong_password() { echo "$(rand 5)-$(rand 5)-$(rand 5)-$(rand 5)"; }
 newer() { [[ "$1" != "$2" && "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1)" == "$1" ]]; }   # is version $1 newer than $2?
 tn_ip() { docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$TN" 2>/dev/null | awk '{print $1}'; }
-tn_base() { local ip; ip=$(tn_ip); [[ -n "$ip" ]] && echo "http://$ip:5380/api"; }
+tn_base() {   # Technitium's API: the container's own address on Docker's network; on the NAS itself in host mode
+  if [[ "$(env_get NET_MODE)" == host ]]; then echo "http://127.0.0.1:$(env_get HTTP_PORT)/api"; return 0; fi
+  local ip; ip=$(tn_ip); [[ -n "$ip" ]] && echo "http://$ip:5380/api"
+}
+# Network mode. "bridge": Docker's network, ports published on the NAS's LAN address; every device shows up as
+# Docker's gateway. "host": Technitium on the NAS's own network, so it sees each device's address; it is told to
+# answer DNS on the LAN address only (DSM keeps 127.0.0.1:53 on many models) and to serve its console on the
+# package's port. The core always runs compose.yaml; in host mode this extra file is added on top of it.
+compose() {
+  local f=(-f "$APP/compose.yaml")
+  if [[ "$(env_get NET_MODE)" == host ]]; then write_host_compose; f+=(-f "$APP/compose.host.yaml"); fi
+  docker compose "${f[@]}" --project-directory "$APP" "$@"
+}
+write_host_compose() {
+  cat > "$APP/compose.host.yaml.tmp" <<'YAML'
+# Written by the package in host mode, on top of compose.yaml: Technitium on the NAS's own network.
+services:
+  server:
+    network_mode: host
+    ports: !reset []
+    sysctls: !reset []
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://127.0.0.1:${HTTP_PORT:-5380}/ >/dev/null"]
+YAML
+  mv "$APP/compose.host.yaml.tmp" "$APP/compose.host.yaml"
+}
+sync_net() {   # [mode] — tell Technitium where to listen for DNS and its console, for that network mode
+  local m=${1:-$(env_get NET_MODE)}
+  if [[ "$m" == host ]]; then
+    tn settings/set "dnsServerLocalEndPoints=$(env_get DNS_BIND):$(env_get DNS_PORT)" "webServiceHttpPort=$(env_get HTTP_PORT)" >/dev/null
+  else
+    tn settings/set "dnsServerLocalEndPoints=0.0.0.0:53,[::]:53" webServiceHttpPort=5380 >/dev/null
+  fi
+}
+net_ok() {   # does Technitium already listen where this mode needs it?
+  local s; s=$(tn settings/get) || return 1
+  if [[ "$(env_get NET_MODE)" == host ]]; then
+    jq -e --arg e "$(env_get DNS_BIND):$(env_get DNS_PORT)" --argjson p "$(env_get HTTP_PORT)" \
+      '(.dnsServerLocalEndPoints == [$e]) and (.webServiceHttpPort == $p)' <<< "$s" >/dev/null
+  else jq -e '(.webServiceHttpPort == 5380) and ((.dnsServerLocalEndPoints | index("0.0.0.0:53")) != null)' <<< "$s" >/dev/null; fi
+}
 tn_raw() {   # path token [name=value…] → Technitium's whole JSON answer; 0 when its status is ok
   local base out; base=$(tn_base) || return 1; [[ -n "$base" ]] || return 1
   local args=(); local kv; for kv in "${@:3}"; do args+=(--data-urlencode "$kv"); done
@@ -75,10 +116,26 @@ apply_resolver() {   # from .env → Technitium's forwarders (or none: it resolv
   [[ -n "$FW" ]] || { TN_WHY="no upstream servers given"; return 1; }
   tn settings/set "forwarders=$FW" "forwarderProtocol=$FWP" >/dev/null
 }
-dns_port_taken() {   # → what else listens on the DNS port on this Synology (empty when it's free, or ours)
-  local p; p=$(env_get DNS_PORT); p=${p:-53}
+dns_port_taken() {   # → what else holds the DNS port where Technitium wants it (empty when free, or ours)
+  local p b; p=$(env_get DNS_PORT); p=${p:-53}; b=$(env_get DNS_BIND); b=${b:-0.0.0.0}
   svc_up server && return 0
-  ss -lnup 2>/dev/null | awk -v p=":$p" '$5 ~ p"$" && $5 !~ /^127\./ { print $NF }' | head -n 1
+  # TCP and UDP, every address: another listener clashes when it's on our address or on all of them, and
+  # when we want all addresses (0.0.0.0), anything on the port clashes — 127.0.0.1 included.
+  ss -lntupH 2>/dev/null | awk -v p="$p" -v b="$b" '{ split($5, a, ":"); port = a[length(a)]; host = substr($5, 1, length($5) - length(port) - 1)
+      gsub(/[\[\]]/, "", host); sub(/%.*/, "", host)
+      if (port != p) next
+      if (b != "0.0.0.0" && host != b && host != "0.0.0.0" && host != "*" && host != "::") next
+      who = ($NF ~ /users:/) ? $NF : ""; sub(/^users:\(\("/, "", who); sub(/".*/, "", who)
+      print $1 " " $5 (who != "" ? " (" who ")" : ""); exit }'
+}
+dns_holder_hint() {   # the usual Synology suspects, from the process name when ss could see it
+  case "$1" in
+    *named*)   echo "DSM's DNS Server package — Package Center → DNS Server → Stop" ;;
+    *dnsmasq*) echo "DSM's own dnsmasq, used by its DHCP Server or VPN Server — turn off the one you don't need, or keep Technitium on the LAN address" ;;
+    *samba*)   echo "Synology Directory Server, which runs its own DNS" ;;
+    *docker-proxy*) echo "another container that publishes port $(env_get DNS_PORT) — see Container Manager" ;;
+    *)         echo "another service — DSM's DNS Server package is the usual one (Package Center → DNS Server → Stop)" ;;
+  esac
 }
 zone_for() {   # name → the zone (one of Technitium's own, not built-in) that holds it, or nothing
   tn zones/list | jq -r --arg d "$1" '[.zones[]? | select(.internal != true and (.type == "Primary" or .type == "Forwarder")) | .name
@@ -88,6 +145,7 @@ zone_for() {   # name → the zone (one of Technitium's own, not built-in) that 
 # ------------------------------------------------------------ lifecycle hooks
 app_first_env() {
   env_set TN_IMAGE "$TN_PINNED"
+  env_set NET_MODE "${NET_MODE:-host}"   # new installs: each device's own address in Technitium's logs
   env_set DNS_PORT "${DNS_PORT:-53}"
   env_set RESOLVER forward; env_set UPSTREAM cloudflare; env_set DNS_PROTO https; env_set CUSTOM_DNS ""
   env_set TN_FIRST_PW "$(rand 32)"; env_set TN_PFX_PW "$(rand 24)"
@@ -97,6 +155,8 @@ app_first_env() {
 }
 app_load_env() {
   TN=$(cname server)
+  [[ -n "$(env_get NET_MODE)" ]] || env_set NET_MODE bridge   # installs from before the setting: as they were
+  [[ -n "$(env_get DNS_BIND)" ]] || env_set DNS_BIND "$(env_get LAN_IP)"
   # A newer package brings a newer tested Technitium: move the pin forward (never back), with a backup first.
   local cur pin=${TN_PINNED##*:}
   cur=$(tn_tag)
@@ -111,8 +171,11 @@ app_before_up() {
   local who
   [[ -n "$(env_get TLS)" ]] || env_set TLS off
   [[ -n "$(env_get TN_PFX_PW)" ]] || env_set TN_PFX_PW "$(rand 24)"
+  # DNS listens on the NAS's LAN address, not every address: DSM keeps 127.0.0.1:53 for itself on many models.
+  [[ -n "$(env_get DNS_BIND)" ]] || env_set DNS_BIND "$(env_get LAN_IP)"
   who=$(dns_port_taken)
-  [[ -n "$who" ]] && say "✗ port $(env_get DNS_PORT) (DNS) is already used on this Synology by ${who} — usually DSM's DNS Server package. Stop it (Package Center → DNS Server → Stop), then Run Technitium again."
+  # Stop here with one sentence rather than letting Docker fail and the start be retried.
+  [[ -z "$who" ]] || failed "DNS port $(env_get DNS_PORT) on $(env_get DNS_BIND) is already in use ($who). That's usually $(dns_holder_hint "$who"). Free it, then Package Center → $PKG_TITLE → Run."
   if [[ -f "$VAR/.needs-admin" && -n "$(env_get TN_FIRST_PW)" ]]; then   # only read by Technitium while it has no config yet
     printf '%s' "$(env_get TN_FIRST_PW)" | in_volume config rw -- '[ -f /vol/dns.config ] || { umask 077; cat > /vol/first-password; }' 2>>"$LOG" || true
   fi
@@ -146,7 +209,16 @@ app_version() {
   [[ -n "$v" ]] || v=$(tn_tag)
   printf '%s' "$v" | tr -cd '0-9A-Za-z.-' | head -c 30
 }
-app_after_up() { make_admin 90; [[ -n "$(env_get TN_TOKEN)" ]] && { sync_web || say "✗ the console's HTTPS setting didn't apply: $TN_WHY"; }; true; }
+app_after_up() {
+  make_admin 90
+  [[ -n "$(env_get TN_TOKEN)" ]] || return 0
+  sync_web || say "✗ the console's HTTPS setting didn't apply: $TN_WHY"
+  if ! net_ok; then
+    say "telling Technitium where to listen for the $(env_get NET_MODE) network"
+    sync_net || say "✗ Technitium didn't take the listening addresses: $TN_WHY"
+  fi
+  true
+}
 make_admin() {   # [tries] — the first time: the package's token, then your password (shown once)
   [[ -f "$VAR/.needs-admin" ]] || return 0
   local i first out sess token pw
@@ -201,8 +273,8 @@ app_status() {
   [[ -s "$VAR/tn-detail.json" ]] || echo '{}' > "$VAR/tn-detail.json"
   jq -c --argjson s "${set:-{\}}" --argjson st "${stats:-{\}}" --arg url "$(env_get APP_URL)" --arg ip "$(env_get LAN_IP)" --arg dport "$(env_get DNS_PORT)" \
      --arg resolver "$(env_get RESOLVER)" --arg up "$(env_get UPSTREAM)" --arg proto "$(env_get DNS_PROTO)" --arg custom "$(env_get CUSTOM_DNS)" \
-     --arg api "$api" --arg tls "$(env_get TLS)" --arg tls_source "$(env_get TLS_SOURCE)" --argjson cert "$(cat "$VAR/cert.json" 2>/dev/null || echo null)" \
-     '. + {up: true, url: $url, api: ($api == "1"), dns: {ip: $ip, port: ($dport | tonumber? // 53)},
+     --arg api "$api" --arg net "$(env_get NET_MODE)" --arg bind "$(env_get DNS_BIND)" --arg tls "$(env_get TLS)" --arg tls_source "$(env_get TLS_SOURCE)" --argjson cert "$(cat "$VAR/cert.json" 2>/dev/null || echo null)" \
+     '. + {up: true, url: $url, api: ($api == "1"), dns: {ip: $ip, port: ($dport | tonumber? // 53)}, net: {mode: $net, bind: $bind},
            blocking: {enabled: ($s.enableBlocking // false),
                       until: (($s.temporaryDisableBlockingTill // null) | if . == null then null else (sub("\\.[0-9]+"; "") | fromdateiso8601? // null) end)},
            lists: ($s.blockListUrls // []), list_hours: ($s.blockListUpdateIntervalHours // 24),
@@ -272,10 +344,30 @@ web_drift() { local s; s=$(tn settings/get) || return 1; [[ "$(jq -r '.webServic
 
 # ------------------------------------------------------------ settings, logs, storage, backups, report
 app_settings() {
+  local want_net=${NET_MODE:-$(env_get NET_MODE)} want_tls=${TLS:-$(env_get TLS)}
+  if [[ "$want_net" == host && "$want_tls" != off ]]; then
+    MSG="On the NAS's own network, Technitium's console can't share its port with the package's HTTPS. Turn HTTPS off first (DSM's reverse proxy can still add it), or keep Docker's network."; return 1
+  fi
+  if [[ -n "${NET_MODE:-}" && "$NET_MODE" != "$(env_get NET_MODE)" ]]; then
+    # Told first, while it still answers where it is; the container is then made again for the new mode.
+    say "network: $(env_get NET_MODE) → $NET_MODE"
+    sync_net "$NET_MODE" || say "Technitium will be told where to listen once it's up again ($TN_WHY)"
+    env_set NET_MODE "$NET_MODE"
+  elif [[ "$(env_get NET_MODE)" == host && -n "${HTTP_PORT:-}" ]]; then
+    sync_net host || true   # the console moves with the package's port
+  fi
   [[ -n "${TLS:-}" ]] && env_set TLS "$TLS"
   setup_tls || return 1
+  # While the network changes, Technitium is told about HTTPS once its new container is up (app_after_settings):
+  # until then it isn't where the new mode looks for it.
+  [[ -n "${NET_MODE:-}" ]] && return 0
   sync_web || { MSG="Technitium didn't take the HTTPS setting: $TN_WHY"; return 1; }
   return 0
+}
+app_after_settings() {   # after the container is made again: HTTPS and the listening addresses as the settings say
+  sync_web || say "✗ the console's HTTPS setting didn't apply: $TN_WHY"
+  net_ok || sync_net || say "✗ Technitium didn't take the listening addresses: $TN_WHY"
+  true
 }
 app_extra_ports() {   # DNS, beside the web console, in DSM's firewall list
   printf '[%s_dns]\ntitle="%s: DNS"\ndesc="%s"\nport_forward="no"\ndst.ports="%s/tcp,udp"\n' "$PKG_NAME" "$PKG_TITLE" "$PKG_TITLE" "$(env_get DNS_PORT)"
@@ -307,7 +399,9 @@ app_report() {
   echo "== Technitium $(jq -r '.version // "?"' <<< "$s"); API token works: $([[ "$s" != '{}' ]] && echo yes || echo "no ($TN_WHY)")"
   echo "== last 24 hours: $(jq -r '.totalQueries // "?"' <<< "$st") queries, $(jq -r '.totalBlocked // "?"' <<< "$st") blocked, $(jq -r '.totalClients // "?"' <<< "$st") clients; $(jq -r '.blockListZones // "?"' <<< "$st") domains on blocklists, $(jq -r '.zones // "?"' <<< "$st") zones"
   echo "== blocking: $(jq -c '{enableBlocking, temporaryDisableBlockingTill, blockingType}' <<< "$s" 2>/dev/null)"
-  echo "== DNS port $(env_get DNS_PORT); resolver $(env_get RESOLVER) $(env_get UPSTREAM) $(env_get DNS_PROTO): $(jq -c '{forwarders, forwarderProtocol, recursion}' <<< "$s" 2>/dev/null)"
+  echo "== network: $(env_get NET_MODE); Technitium listens on: $(tn settings/get 2>/dev/null | jq -c '{dns: .dnsServerLocalEndPoints, web: .webServiceHttpPort}' 2>/dev/null)"
+  echo "== DNS port $(env_get DNS_PORT) on $(env_get DNS_BIND); who listens on it:"; ss -lntupH 2>/dev/null | awk -v p=":$(env_get DNS_PORT)\$" '$5 ~ p { print "   " $1, $5, $NF }'
+  echo "== resolver $(env_get RESOLVER) $(env_get UPSTREAM) $(env_get DNS_PROTO): $(jq -c '{forwarders, forwarderProtocol, recursion}' <<< "$s" 2>/dev/null)"
   echo "== lists"; jq -r '.blockListUrls[]?' <<< "$s" 2>/dev/null
   echo; echo "== HTTPS"; echo "mode $(env_get TLS), in use: $(env_get TLS_SOURCE); console TLS: $(jq -r '.webServiceEnableTls' <<< "$s" 2>/dev/null)"; jq -c 'del(.names)' "$VAR/cert.json" 2>/dev/null
   :

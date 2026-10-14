@@ -30,11 +30,23 @@ a port for Technitium's web console (5380 by default), a time zone, the DNS
 port and HTTPS. The admin password is made at the first start and shown once
 in the window.
 
-**Port 53 must be free on the Synology.** Routers and devices only ask DNS
-servers on port 53. On a Synology that's free unless DSM's **DNS Server**
-package is running. The wizard checks and warns you if port 53 is taken; stop
-DNS Server before installing (Package Center → DNS Server → Stop). If anything
-is still in the way, the log says so plainly.
+**Port 53 on the Synology's LAN address must be free.** Routers and devices
+only ask DNS servers on port 53. Technitium listens there on the NAS's LAN
+address only (the one the wizard found), not on every address: many Synology
+models keep `127.0.0.1:53` for DSM itself, and a package asking for all
+addresses would clash with it. What does get in the way is DSM's **DNS
+Server** package, Synology Directory Server, or another container publishing
+port 53. Before starting, the package checks TCP and UDP on that address; if
+something holds it, Technitium doesn't start and the log names what's there
+and what to do, rather than retrying.
+
+**Network.** By default Technitium runs on the NAS's own network, so its logs
+and statistics show each device's address. It answers DNS on the LAN address
+only, and its console is on the package's port. The Site address tab can switch
+it to Docker's network instead, where every device shows up as Docker's
+gateway; switching makes the container again, with DNS away for a few seconds.
+On the NAS's own network the package's HTTPS for the console is off (DSM's
+reverse proxy can add it).
 
 Then point your network at it. In your router's DHCP/LAN settings, set the DNS
 server to the Synology's address, as the only DNS server. The Setup tab walks
@@ -90,7 +102,7 @@ you through it.
 ## How it works
 
 Technitium (`technitium/dns-server`, pinned) runs as one container. DNS is
-published on port 53 (TCP and UDP) and its web console on the package's port.
+published on port 53 (TCP and UDP) on the LAN address and its web console on the package's port.
 Its config folder is the `technitium_config` volume.
 
 The first start:

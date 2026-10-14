@@ -1,6 +1,6 @@
 # Technitium's steps for the chassis harness (chassis/tests/e2e.sh <appdir> act).
 # DNS on port 1054 here: this box's own resolver has 53.
-app_e2e_answers() { printf "DNS_PORT='1054'\nTLS='off'\n"; }
+app_e2e_answers() { printf "DNS_PORT='1054'\nTLS='off'\nNET_MODE='bridge'\n"; }
 wait_for() { local i; for i in $(seq 1 "$2"); do touch "$VAR/watching"; jq -e "$1" "$VAR/status.json" >/dev/null 2>&1 && return 0; sleep 1; done; return 1; }
 secret() { local s; s=$(jq -r 'select(.kind == "setup") | .password' "$VAR/secret.json" 2>/dev/null); rm -f "$VAR/secret.json"; printf '%s' "$s"; }
 login_ok() { [[ "$(curl -sk --max-time 10 "$1/api/user/login" --data-urlencode user=admin --data-urlencode "pass=$2" | jq -r .status)" == ok ]]; }
@@ -92,6 +92,21 @@ app_e2e_act() {
   [[ "$(ask example.net)" =~ ^[0-9]+\. ]] && echo "  ok   DNS unaffected by HTTPS" || { echo "  FAIL dns after https"; fail=1; }
   request "ACTION='settings'" "TLS='off'" || fail=1
   login_ok "$url" "$pw2" && echo "  ok   back to plain HTTP" || { echo "  FAIL http again"; fail=1; }
+  # Network mode: the NAS's own network shows each device's address; HTTPS from the package can't share its port.
+  request "ACTION='settings'" "NET_MODE='host'" "TLS='self'" >/dev/null 2>&1
+  [[ "$(jq -r .app.net.mode "$VAR/status.json")" == bridge ]] && echo "  ok   host network with the package's HTTPS on: refused" || { echo "  FAIL host+https accepted"; fail=1; }
+  request "ACTION='settings'" "NET_MODE='host'" || fail=1
+  wait_for '.app.net.mode == "host" and .app.api == true' 60 && [[ "$(docker inspect -f '{{.HostConfig.NetworkMode}}' technitium-server)" == host ]] \
+    && echo "  ok   host network: the container is on the NAS's own network, the window's token still works" || { echo "  FAIL host: $(docker inspect -f '{{.HostConfig.NetworkMode}}' technitium-server) $(jq -c .app.net "$VAR/status.json")"; fail=1; }
+  [[ "$(ask example.net)" =~ ^[0-9]+\. ]] && login_ok "$url" "$pw2" && echo "  ok   host network: DNS on 127.0.0.1:1054 and the console answer" || { echo "  FAIL host dns/console"; fail=1; }
+  tok=$(curl -s "$url/api/user/login" --data-urlencode user=admin --data-urlencode "pass=$pw2" | jq -r '.token // empty')
+  for i in $(seq 1 15); do ask "client-$i-$RANDOM.example.com" >/dev/null; sleep 5
+    clients=$(curl -s "$url/api/dashboard/stats/get" --data-urlencode "token=$tok" --data-urlencode type=LastHour | jq -r '[.response.topClients[]?.name] | join(",")')
+    [[ "$clients" == *127.0.0.1* ]] && break; done
+  [[ "$clients" == *127.0.0.1* ]] && echo "  ok   host network: Technitium sees the real client (top clients: $clients)" || { echo "  FAIL client address: $clients"; fail=1; }
+  request "ACTION='settings'" "NET_MODE='bridge'" || fail=1
+  wait_for '.app.net.mode == "bridge" and .app.api == true' 60 && [[ "$(ask example.net)" =~ ^[0-9]+\. ]] && login_ok "$url" "$pw2" \
+    && echo "  ok   back to Docker's network: DNS and the console answer" || { echo "  FAIL back to bridge: $(jq -c .app.net "$VAR/status.json")"; fail=1; }
   # Updates: the pin moves to the newest release; the old image goes by name, nothing else is pruned.
   docker pull -q technitium/dns-server:15.6.0 >/dev/null 2>&1
   docker run --rm -v "$APP:/a" alpine sed -i 's|^TN_IMAGE=.*|TN_IMAGE=technitium/dns-server:15.6.0|' /a/.env

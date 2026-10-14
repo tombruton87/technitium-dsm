@@ -10,8 +10,9 @@ services:
     restart: unless-stopped
     ports:
       # DNS for your network: devices (or your router) are pointed at this Synology's address.
-      - "${DNS_PORT:-53}:53/tcp"
-      - "${DNS_PORT:-53}:53/udp"
+      # DNS on the NAS's LAN address only: DSM often keeps 127.0.0.1:53 for itself, and 0.0.0.0 would clash with it.
+      - "${DNS_BIND:-0.0.0.0}:${DNS_PORT:-53}:53/tcp"
+      - "${DNS_BIND:-0.0.0.0}:${DNS_PORT:-53}:53/udp"
       # Technitium's web console: HTTP inside on 5380, or HTTPS on 53443 when the package turns it on.
       - "${HTTP_PORT:-5380}:${INNER_PORT:-5380}"
     volumes:

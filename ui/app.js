@@ -122,8 +122,8 @@
 
   // ---------------------------------------------------------------- Site address: HTTPS
   P.register("site", {
-    fill: function (st) { var t = (st.app && st.app.tls) || {}; $("set-tls").value = t.mode || "off"; },
-    values: function () { return { tls: $("set-tls").value }; },
+    fill: function (st) { var a = st.app || {}, t = a.tls || {}; $("set-tls").value = t.mode || "off"; $("set-net").value = (a.net && a.net.mode) || "bridge"; },
+    values: function () { return { tls: $("set-tls").value, net: $("set-net").value }; },
     render: function (st) {
       var t = (st.app && st.app.tls) || {}, c = t.cert, tb = $("tls-info"), note = $("tls-note"), acts = $("tls-actions"); P.clear(tb); P.clear(acts);
       $("tls-card").hidden = !t.mode || t.mode === "off";

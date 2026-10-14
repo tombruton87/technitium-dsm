@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.1 — 2026-10-14
+
+- DNS listens on the NAS's LAN address instead of every address. Many
+  Synology models keep `127.0.0.1:53` for DSM itself, and 1.0.0 couldn't start
+  alongside it ("address already in use").
+- If port 53 is taken on that address, the package stops with one sentence
+  naming what holds it, instead of retrying. The support report lists what
+  listens on port 53.
+- A **Network** setting on the Site address tab: the NAS's own network (new
+  installs), where Technitium's logs show each device's address, or Docker's
+  network, where every device shows as Docker's gateway. Changing it makes the
+  container again. Installs from 1.0.0 stay on Docker's network until changed.
+
 ## 1.0.0 — 2026-10-13
 
 First release. Technitium DNS Server 15.6.1 in Container Manager, answering DNS
