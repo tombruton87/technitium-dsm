@@ -118,6 +118,19 @@
       $("su-port").textContent = d.port && d.port !== 53 ? "Technitium answers on port " + d.port + " here — most routers and devices can only use port 53." : "";
     }
   });
+  // Show password: asked for only when the button is pressed, never kept in the page longer than it's shown.
+  $("show-pw").onclick = function () {
+    P.api("action=showpw").then(function (d) {
+      $("pw-text").textContent = d.password; $("pw-when").textContent = "Made by the package " + P.ago(d.at) + ". Changed it in Technitium's console since? Then this one no longer works.";
+      $("pw-box").hidden = false;
+    }).catch(function (e) { P.showErr(e.message); });
+  };
+  $("pw-copy").onclick = function () { P.copy($("pw-text").textContent, $("pw-copy"), $("pw-text")); };
+  $("pw-hide").onclick = function () { $("pw-text").textContent = ""; $("pw-box").hidden = true; };
+  // The window's refresh puts saved settings back into the Site address fields unless one has been touched;
+  // the core watches only its own fields, so Network and HTTPS mark the form as touched too.
+  ["set-net", "set-tls"].forEach(function (id) { $(id).addEventListener("change", function () { $("set-url").dataset.touched = "1"; }); });
+
   P.register("secretNote", function () { return "For Technitium's web console, user admin. Keep it in your password manager."; });
 
   // ---------------------------------------------------------------- Site address: HTTPS

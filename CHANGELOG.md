@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.2 — 2026-10-14
+
+- The Network and HTTPS settings on the Site address tab no longer jump back to
+  the saved value a moment after you change them, before you can press Save.
+- **Show password** on the Setup tab: the package keeps the admin password it
+  last made (in its own folder, for DSM administrators only) and shows it again
+  with a Copy button. Installs from earlier versions have nothing kept until
+  New password makes one.
+
 ## 1.0.1 — 2026-10-14
 
 - DNS listens on the NAS's LAN address instead of every address. Many

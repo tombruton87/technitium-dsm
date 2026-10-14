@@ -245,7 +245,7 @@ make_admin() {   # [tries] — the first time: the package's token, then your pa
   # Technitium writes its users and tokens to disk only when it stops cleanly: a restart now keeps both.
   docker restart -t 30 "$TN" >> "$LOG" 2>&1 || true
   for i in $(seq 1 60); do app_health && break; sleep 1; done
-  leave_secret "Technitium (user admin)" "$pw" setup; rm -f "$VAR/.needs-admin"
+  leave_secret "Technitium (user admin)" "$pw" setup; keep_pw "$pw"; rm -f "$VAR/.needs-admin"
   say "first start: Technitium's admin password was set (shown once in the window); the package uses an API token of its own"
 }
 
@@ -363,6 +363,9 @@ app_settings() {
   [[ -n "${NET_MODE:-}" ]] && return 0
   sync_web || { MSG="Technitium didn't take the HTTPS setting: $TN_WHY"; return 1; }
   return 0
+}
+keep_pw() {   # password — kept for "Show password": in the package's own folder, readable only by the package (DSM administrators)
+  jq -n -c --arg p "$1" --argjson at "$(now)" '{password: $p, at: $at}' > "$VAR/admin-pw.json.tmp" && for_window "$VAR/admin-pw.json"
 }
 app_after_settings() {   # after the container is made again: HTTPS and the listening addresses as the settings say
   sync_web || say "✗ the console's HTTPS setting didn't apply: $TN_WHY"
@@ -485,7 +488,7 @@ app_act() {   # action (request vars are set)
     newpw)
       pw=$(strong_password)
       tn admin/users/set user=admin "newPass=$pw" >/dev/null || { MSG="The password wasn't changed: $TN_WHY"; return 1; }
-      leave_secret "Technitium (user admin)" "$pw" setup; MSG="Your new password is shown below, once." ;;
+      leave_secret "Technitium (user admin)" "$pw" setup; keep_pw "$pw"; MSG="Your new password is shown below, once." ;;
     refreshcert)
       tls_refresh_dsm config; setup_tls || return 1; sync_web || { MSG="Technitium didn't take the certificate: $TN_WHY"; return 1; }
       MSG=$([[ "$(env_get TLS_SOURCE)" == dsm ]] && echo "DSM's certificate was read again." || echo "A new self-signed certificate is in use.") ;;

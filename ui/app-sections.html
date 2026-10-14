@@ -56,6 +56,7 @@
         <p class="muted small">Lookups from your devices to this Synology stay on your own network, as plain DNS — like with any router. The step that leaves your home, from Technitium to the internet, is encrypted when the Resolvers tab says DNS-over-HTTPS or DNS-over-TLS (the default), or avoided entirely in recursive mode.</p>
         <p class="muted small">Technitium can also serve DNS-over-HTTPS and DNS-over-TLS to devices (Android's Private DNS, for instance), but that needs a domain name with a trusted certificate and more ports open; the package doesn't set it up. Its web console has the settings if you want to.</p></div></div>
       <div class="card"><h2>Technitium's password</h2><div class="in">
-        <p class="muted small">For Technitium's own web console (user <b>admin</b>). Lost it? Make a new one — shown once. The package uses an API token of its own, so the window keeps working.</p>
-        <button class="btn" data-act="newpw" data-confirm="Make a new password for Technitium's admin? The old one stops working.">New password</button></div></div>
+        <p class="muted small">For Technitium's own web console (user <b>admin</b>). The package keeps the password it last made, for DSM administrators to see again; if you change it in Technitium's console, make a new one here so the two agree. The package uses an API token of its own, so the window keeps working either way.</p>
+        <p><button class="btn" id="show-pw" type="button">Show password</button> <button class="btn" data-act="newpw" data-confirm="Make a new password for Technitium's admin? The old one stops working.">New password</button></p>
+        <p id="pw-box" hidden><code id="pw-text"></code> <button class="btn" id="pw-copy" type="button">Copy</button> <button class="btn" id="pw-hide" type="button">Hide</button><br><span class="muted small" id="pw-when"></span></p></div></div>
     </section>

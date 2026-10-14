@@ -63,3 +63,10 @@ NET_MODE='$net'"
   lines="$lines
 TLS='$tls'"
 }
+
+app_cgi_get() {   # action query → replies, or returns for "unknown"
+  case "$1" in
+    showpw) [[ -f "$VAR/admin-pw.json" ]] || error "404 Not Found" "The package hasn't kept a password yet: New password makes one, and it's kept from then on."
+            reply "200 OK" application/json "$(cat "$VAR/admin-pw.json")" ;;
+  esac
+}
