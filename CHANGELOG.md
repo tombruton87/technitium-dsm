@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.1.0 — 2026-10-14
+
+- A **Categories** tab: what each device on your network looks up over the
+  last 24 hours, sorted into ten categories (ads & tracking, malware &
+  phishing, scams, adult, gambling, social media, YouTube, piracy, drugs, VPN &
+  DNS bypass), with the most looked-up sites in each. One button turns it on:
+  it installs Technitium's query log (Sqlite, up to 500,000 lookups for 7 days)
+  and fetches the category lists once a day.
+- **Groups and blocking:** put devices in groups by address or subnet and tick
+  the categories to block for each, plus a choice for everyone else. Saving
+  sets up Technitium's Advanced Blocking app (installing it if needed) and
+  replaces whatever it had.
+- Category lists from HaGeZi and the Block List Project.
+
 ## 1.0.2 — 2026-10-14
 
 - The Network and HTTPS settings on the Site address tab no longer jump back to

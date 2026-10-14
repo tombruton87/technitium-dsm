@@ -54,6 +54,86 @@
   $("dm-block").onclick = function () { P.act("domainadd", { kind: "block", domain: $("dm-name").value.trim() }).then(function () { $("dm-name").value = ""; }); };
 
   // ---------------------------------------------------------------- Zones
+  // ---------------------------------------------------------------- Categories: what each device looks up, and blocking per group
+  var catStats = null, catAt = 0, editing = null;
+  function catLabel(cat, key) { if (key === "other") return "Other"; var c = (cat.catalog || []).filter(function (x) { return x.key === key; })[0]; return c ? c.label : key; }
+  function checks(box, cat, chosen) {
+    P.clear(box);
+    (cat.catalog || []).forEach(function (c) {
+      var l = P.el("label"), i = P.el("input"); i.type = "checkbox"; i.value = c.key; i.checked = chosen.indexOf(c.key) >= 0;
+      l.appendChild(i); l.appendChild(document.createTextNode(" " + c.label)); box.appendChild(l);
+    });
+  }
+  function ticked(box) { return Array.prototype.map.call(box.querySelectorAll("input:checked"), function (i) { return i.value; }); }
+  function curCat() { return (((P.S || {}).status || {}).app || {}).cat || {}; }
+  // P.act reports a refusal in the window rather than failing, so "saved" is told by no error being shown.
+  function saveGroups(g, confirmText) { return P.act("catgroups", { groups: JSON.stringify(g) }, confirmText).then(function () { return document.getElementById("err").hidden; }); }
+  function loadStats(force) {
+    if (!force && Date.now() - catAt < 60000) return Promise.resolve(catStats);
+    return P.api("action=catstats").then(function (d) { catStats = d; catAt = Date.now(); return d; }).catch(function () { catAt = Date.now(); return catStats; });
+  }
+  function drawStats(cat, d) {
+    var tiles = $("cat-tiles"), devSel = $("cat-dev"), rows = $("cat-rows"); P.clear(tiles); P.clear(rows);
+    if (!d || !(d.devices || []).length) { $("cat-when").textContent = "Nothing counted yet — the first count comes within ten minutes, once devices look things up."; return; }
+    var total = {}, all = 0;
+    d.devices.forEach(function (dev) { all += dev.n; Object.keys(dev.cats || {}).forEach(function (k) { total[k] = (total[k] || 0) + dev.cats[k].n; }); });
+    Object.keys(total).sort(function (x, y) { return total[y] - total[x]; }).forEach(function (k) { P.tile(tiles, Math.round(total[k] * 1000 / all) / 10 + "%", catLabel(cat, k)); });
+    $("cat-when").textContent = num(all) + " lookups from " + d.devices.length + " device(s), counted " + P.ago(d.at) + ".";
+    var groupOf = function (ip) { var g = ((cat.groups || {}).groups || []).filter(function (x) { return x.members.indexOf(ip) >= 0; })[0]; return g ? g.name : ""; };
+    var keep = devSel.value; P.clear(devSel);
+    var o = P.el("option", "All devices"); o.value = ""; devSel.appendChild(o);
+    d.devices.forEach(function (dev) { var g = groupOf(dev.ip), x = P.el("option", dev.ip + (g ? " (" + g + ")" : "") + " — " + num(dev.n) + " lookups"); x.value = dev.ip; devSel.appendChild(x); });
+    devSel.value = keep;
+    var pick = d.devices.filter(function (dev) { return !devSel.value || dev.ip === devSel.value; }), sum = {};
+    pick.forEach(function (dev) { Object.keys(dev.cats || {}).forEach(function (k) { var c = dev.cats[k], s = sum[k] || (sum[k] = { n: 0, nb: 0, top: {} }); s.n += c.n; s.nb += c.nb; (c.top || []).forEach(function (t) { s.top[t[0]] = (s.top[t[0]] || 0) + t[1]; }); }); });
+    Object.keys(sum).sort(function (x, y) { return sum[y].n - sum[x].n; }).forEach(function (k) {
+      var s = sum[k], top = Object.keys(s.top).sort(function (x, y) { return s.top[y] - s.top[x]; }).slice(0, 5).join(", ");
+      P.row(rows, [catLabel(cat, k), P.cell(num(s.n), "n"), P.cell(num(s.nb), "n"), P.cell(top, "muted small")]);
+    });
+  }
+  function drawGroups(cat) {
+    var g = cat.groups || { groups: [], default: [] }, rows = $("grp-rows"); P.clear(rows);
+    (g.groups || []).forEach(function (grp, i) {
+      var acts = P.el("span");
+      acts.appendChild(P.btn("Edit", "", function () {
+        editing = i; $("grp-name").value = grp.name; $("grp-members").value = grp.members.join(", "); checks($("grp-cats"), cat, grp.block);
+        $("grp-form-title").textContent = "Edit " + grp.name; $("grp-cancel").hidden = false; $("grp-name").focus();
+      }));
+      acts.appendChild(P.btn("Remove", "danger", function () {
+        var n = JSON.parse(JSON.stringify(g)); n.groups.splice(i, 1); saveGroups(n, "Remove the group " + grp.name + "? Its devices then follow Everyone else.");
+      }));
+      P.row(rows, [grp.name, grp.members.join(", "), grp.block.map(function (k) { return catLabel(cat, k); }).join(", ") || "nothing", P.cell(acts, "n")]);
+    });
+    P.row(rows, ["Everyone else", "all other devices", (g.default || []).map(function (k) { return catLabel(cat, k); }).join(", ") || "nothing", ""]);
+    if (editing === null && !$("grp-cats").dataset.drawn) { checks($("grp-cats"), cat, []); $("grp-cats").dataset.drawn = "1"; }
+    if (!$("def-cats").dataset.touched) checks($("def-cats"), cat, g.default || []);
+  }
+  function resetForm(cat) { editing = null; $("grp-name").value = ""; $("grp-members").value = ""; checks($("grp-cats"), cat, []); $("grp-form-title").textContent = "Add a group"; $("grp-cancel").hidden = true; }
+  P.register("categories", {
+    init: function () {
+      $("grp-save").onclick = function () {
+        var cat = curCat(), g = JSON.parse(JSON.stringify(cat.groups || { groups: [], default: [] }));
+        var grp = { name: $("grp-name").value.trim(), members: $("grp-members").value.split(/[\s,]+/).filter(Boolean), block: ticked($("grp-cats")) };
+        if (editing === null) g.groups.push(grp); else g.groups[editing] = grp;
+        saveGroups(g).then(function (ok) { if (ok) resetForm(cat); });
+      };
+      $("grp-cancel").onclick = function () { resetForm(curCat()); };
+      $("def-cats").addEventListener("change", function () { $("def-cats").dataset.touched = "1"; });
+      $("def-save").onclick = function () {
+        var cat = curCat(), g = JSON.parse(JSON.stringify(cat.groups || { groups: [], default: [] }));
+        g.default = ticked($("def-cats")); saveGroups(g).then(function (ok) { if (ok) $("def-cats").dataset.touched = ""; });
+      };
+      $("cat-dev").onchange = function () { drawStats(curCat(), catStats); };
+    },
+    render: function (st) {
+      var cat = (st.app || {}).cat || {};
+      $("cat-off").hidden = !!cat.querylog; $("cat-on").hidden = !cat.querylog;
+      if (!cat.querylog) return;
+      drawGroups(cat);
+      loadStats().then(function (d) { drawStats(cat, d); });
+    }
+  });
+
   P.register("zones", {
     render: function (st) {
       var a = st.app || {}, zones = a.zones || [], tb = $("zn-list");

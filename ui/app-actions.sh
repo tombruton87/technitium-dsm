@@ -4,7 +4,11 @@ name_ok() { [[ "$1" =~ ^[a-z0-9_]([a-z0-9_-]{0,62}\.)+[a-z0-9]([a-z0-9-]{0,62})$
 app_cgi_post() {   # action body → sets $lines, or error
   local a=$1 body=$2 v u k d t z r up p c
   case "$a" in
-    listupdate|newpw|refreshcert) lines="ACTION='$a'" ;;
+    listupdate|newpw|refreshcert|catsetup) lines="ACTION='$a'" ;;
+    catgroups) v=$(decode "$(param groups "$body")")
+      (( ${#v} <= 12000 )) && cat_groups_ok_cgi <<< "$v" || error "400 Bad Request" "A group needs a name (letters, digits, spaces), at least one device address or subnet, and categories from the list."
+      lines="ACTION='catgroups'
+GROUPS_B64='$(b64u "$(jq -c . <<< "$v")")'" ;;
     blocking) v=$(param on "$body"); [[ "$v" =~ ^[01]$ ]] || error "400 Bad Request" "On or off?"; lines="ACTION='blocking'
 ON='$v'" ;;
     pause) v=$(param minutes "$body"); [[ "$v" =~ ^(5|30|60)$ ]] || error "400 Bad Request" "Pick how long."; lines="ACTION='pause'
@@ -66,7 +70,22 @@ TLS='$tls'"
 
 app_cgi_get() {   # action query → replies, or returns for "unknown"
   case "$1" in
+    catstats) [[ -f "$VAR/categories.json" ]] || error "404 Not Found" "Nothing counted yet: the first count comes within ten minutes of turning category stats on."
+            reply "200 OK" application/json "$(cat "$VAR/categories.json")" ;;
     showpw) [[ -f "$VAR/admin-pw.json" ]] || error "404 Not Found" "The package hasn't kept a password yet: New password makes one, and it's kept from then on."
             reply "200 OK" application/json "$(cat "$VAR/admin-pw.json")" ;;
   esac
+}
+
+# The same rules as the setup container's cat_groups_ok, checked here before the request is written.
+CAT_KEYS='["threats","scams","adult","gambling","social","youtube","piracy","drugs","bypass","ads"]'
+cat_groups_ok_cgi() {
+  jq -e --argjson keys "$CAT_KEYS" '
+    def ip: test("^([0-9]{1,3}\\.){3}[0-9]{1,3}(/([0-9]|[12][0-9]|3[0-2]))?$") or test("^[0-9a-fA-F:]{2,39}(/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8]))?$");
+    (.groups | type == "array" and length <= 20) and (.default | type == "array")
+    and ([.default[] | select(. as $k | $keys | index($k) | not)] | length == 0)
+    and all(.groups[]; (.name | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9 ._-]{0,23}$") and (ascii_downcase != "everyone else"))
+        and (.members | type == "array" and length >= 1 and length <= 64 and all(.[]; type == "string" and ip))
+        and (.block | type == "array" and all(.[]; . as $k | $keys | index($k))))
+    and ([.groups[].name | ascii_downcase] | length == (unique | length))' >/dev/null 2>&1
 }

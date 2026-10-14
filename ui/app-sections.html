@@ -14,6 +14,30 @@
       <div class="card"><h2>Blocked most (last 24 hours)</h2><table><tbody id="bl-top"></tbody></table></div>
     </section>
 
+    <section data-page="categories" hidden>
+      <div class="card" id="cat-off" hidden><h2>Category stats</h2><div class="in">
+        <p>See what each device on your network looks up, sorted into categories — ads &amp; tracking, social media, YouTube, adult, gambling and more — and block whole categories for groups of devices.</p>
+        <p class="muted small">This turns on Technitium's query log (its Sqlite app, keeping up to 500,000 lookups for 7 days in Technitium's own data) and fetches the category lists once a day. Devices show by their own address on the NAS's own network (Site address → Network); on Docker's network they all show as one.</p>
+        <button class="btn primary" data-act="catsetup">Turn on category stats</button></div></div>
+      <div id="cat-on" hidden>
+        <div class="card"><h2>Last 24 hours</h2><div class="in">
+          <div class="tiles" id="cat-tiles"></div>
+          <p class="muted small" id="cat-when"></p></div></div>
+        <div class="card"><h2>Devices</h2><div class="in">
+          <label class="f"><span>Device</span><select id="cat-dev"></select></label>
+          <table><thead><tr><th>Category</th><th class="n">Lookups</th><th class="n">Blocked</th><th>Most looked up</th></tr></thead><tbody id="cat-rows"></tbody></table></div></div>
+        <div class="card"><h2>Groups and blocking</h2><div class="in">
+          <p class="muted small">Put devices in groups by address (192.168.10.25) or subnet (192.168.10.64/26), and tick the categories to block for each. Everyone else is every device not in a group. Saving sets Technitium's Advanced Blocking app (installing it if needed) and replaces any settings it had — on top of the Blocking tab, which still applies to everyone.</p>
+          <table><thead><tr><th>Group</th><th>Devices</th><th>Blocks</th><th></th></tr></thead><tbody id="grp-rows"></tbody></table>
+          <h3 id="grp-form-title">Add a group</h3>
+          <label class="f"><span>Name</span><input type="text" id="grp-name" maxlength="24" placeholder="Kids"></label>
+          <label class="f"><span>Devices (addresses or subnets, separated by commas or spaces)</span><input type="text" id="grp-members" placeholder="192.168.10.25, 192.168.10.26"></label>
+          <div class="f"><span>Block</span><div id="grp-cats" class="checks"></div></div>
+          <p><button class="btn primary" id="grp-save" type="button">Save group</button> <button class="btn" id="grp-cancel" type="button" hidden>Cancel</button></p>
+          <h3>Everyone else blocks</h3><div id="def-cats" class="checks"></div>
+          <p><button class="btn" id="def-save" type="button">Save</button></p></div></div>
+      </div>
+    </section>
     <section data-page="zones" hidden>
       <div class="note">Names Technitium answers itself, for your whole network: give the NAS, a printer or a camera a name like <b>nas.home</b> instead of an IP address. A name in a zone that doesn't exist yet makes the zone (nas.home → zone <b>home</b>).</div>
       <div class="card"><h2>Add a name</h2><div class="in">

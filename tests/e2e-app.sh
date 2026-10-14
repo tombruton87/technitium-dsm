@@ -107,6 +107,25 @@ app_e2e_act() {
   request "ACTION='settings'" "NET_MODE='bridge'" || fail=1
   wait_for '.app.net.mode == "bridge" and .app.api == true' 60 && [[ "$(ask example.net)" =~ ^[0-9]+\. ]] && login_ok "$url" "$pw2" \
     && echo "  ok   back to Docker's network: DNS and the console answer" || { echo "  FAIL back to bridge: $(jq -c .app.net "$VAR/status.json")"; fail=1; }
+  # Categories: the query log is turned on, lookups are sorted into categories, groups block by category.
+  request "ACTION='catsetup'" || fail=1
+  wait_for '.app.cat.querylog == true' 120 && echo "  ok   category stats on: Technitium's query log app installed" || { echo "  FAIL catsetup: $(jq -c .app.cat "$VAR/status.json" | head -c 300)"; fail=1; }
+  for d in www.instagram.com www.facebook.com youtube.com pornhub.com www.bbc.co.uk; do ask "$d" >/dev/null; done
+  rm -f "$VAR/.cat-check"
+  for i in $(seq 1 40); do jq -e '[.devices[].cats | keys[]] | (index("social") and index("youtube") and index("adult"))' "$VAR/categories.json" >/dev/null 2>&1 && break; sleep 5; done
+  jq -e '[.devices[].cats | keys[]] | (index("social") and index("youtube") and index("adult"))' "$VAR/categories.json" >/dev/null 2>&1 \
+    && echo "  ok   lookups sorted: $(jq -c '[.devices[0].cats | to_entries[] | "\(.key) \(.value.n)"]' "$VAR/categories.json")" || { echo "  FAIL categories: $(head -c 300 "$VAR/categories.json" 2>/dev/null)"; fail=1; }
+  request "ACTION='catgroups'" "GROUPS_B64='$(printf '%s' '{"groups":[{"name":"x","members":["1.2.3"],"block":[]}],"default":[]}' | base64 -w0 | tr '+/' '-_' | tr -d '=')'" >/dev/null 2>&1
+  [[ "$(jq -r '.app.cat.groups.groups | length' "$VAR/status.json")" == 0 ]] && echo "  ok   a group with a bad address: refused" || { echo "  FAIL bad group accepted"; fail=1; }
+  g='{"groups":[{"name":"Kids","members":["172.16.0.0/12","127.0.0.1"],"block":["social","youtube"]}],"default":["ads"]}'
+  request "ACTION='catgroups'" "GROUPS_B64='$(printf '%s' "$g" | base64 -w0 | tr '+/' '-_' | tr -d '=')'" || fail=1
+  for i in $(seq 1 24); do [[ -z "$(ask www.instagram.com)" || "$(ask www.instagram.com)" == 0.0.0.0 ]] && break; sleep 5; done
+  ig=$(ask www.instagram.com); yt=$(ask youtube.com); bbc=$(ask www.bbc.co.uk)
+  [[ ( -z "$ig" || "$ig" == 0.0.0.0 ) && ( -z "$yt" || "$yt" == 0.0.0.0 ) && "$bbc" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[1-9] ]] \
+    && echo "  ok   group Kids blocks social and YouTube (instagram: ${ig:-blocked}, youtube: ${yt:-blocked}), the BBC still answers ($bbc)" || { echo "  FAIL group blocking: ig=$ig yt=$yt bbc=$bbc"; fail=1; }
+  request "ACTION='catgroups'" "GROUPS_B64='$(printf '%s' '{"groups":[],"default":[]}' | base64 -w0 | tr '+/' '-_' | tr -d '=')'" || fail=1
+  for i in $(seq 1 12); do [[ "$(ask www.instagram.com)" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[1-9] ]] && break; sleep 5; done
+  [[ "$(ask www.instagram.com)" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[1-9] ]] && echo "  ok   group removed: instagram answers again" || { echo "  FAIL unblock: $(ask www.instagram.com)"; fail=1; }
   # Updates: the pin moves to the newest release; the old image goes by name, nothing else is pruned.
   docker pull -q technitium/dns-server:15.6.0 >/dev/null 2>&1
   docker run --rm -v "$APP:/a" alpine sed -i 's|^TN_IMAGE=.*|TN_IMAGE=technitium/dns-server:15.6.0|' /a/.env

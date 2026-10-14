@@ -21,6 +21,7 @@ app_validate() {   # key value → 0 if the value has the key's shape
     DNS_PORT)   [[ "$2" =~ ^[0-9]{2,5}$ ]] && (( 10#$2 >= 1 && 10#$2 <= 65535 )) ;;
     TLS)        [[ "$2" =~ ^(dsm|self|off)$ ]] ;;
     NET_MODE)   [[ "$2" =~ ^(host|bridge)$ ]] ;;
+    GROUPS_B64) [[ "$2" =~ ^[A-Za-z0-9_-]+$ ]] && (( ${#2} <= 16000 )) ;;
     PAUSE_MIN)  [[ "$2" =~ ^(5|30|60)$ ]] ;;
     URL_B64)    [[ "$2" =~ ^[A-Za-z0-9_-]+$ ]] && (( ${#2} <= 700 )) ;;
     KIND)       [[ "$2" =~ ^(allow|block)$ ]] ;;
@@ -140,6 +141,122 @@ dns_holder_hint() {   # the usual Synology suspects, from the process name when 
 zone_for() {   # name → the zone (one of Technitium's own, not built-in) that holds it, or nothing
   tn zones/list | jq -r --arg d "$1" '[.zones[]? | select(.internal != true and (.type == "Primary" or .type == "Forwarder")) | .name
     | select(. as $z | $d == $z or ($d | endswith("." + $z)))] | sort_by(length) | last // empty' 2>/dev/null
+}
+
+# ------------------------------------------------------------ categories
+# Category lists: matched against Technitium's query log for the Categories tab, and handed to its Advanced
+# Blocking app per device group. Order matters: a domain in two lists counts as the first one's.
+# key|label|list (one domain per line; a domain stands for its subdomains too)|the category's own core domains, when the list leaves them out
+CAT_CATALOG='threats|Malware & phishing|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/tif.mini-onlydomains.txt
+scams|Scams & fake shops|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/fake-onlydomains.txt
+adult|Adult|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/nsfw-onlydomains.txt
+gambling|Gambling|https://blocklistproject.github.io/Lists/alt-version/gambling-nl.txt
+social|Social media|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/social-onlydomains.txt
+youtube|YouTube|https://blocklistproject.github.io/Lists/alt-version/youtube-nl.txt|youtube.com,youtu.be,ytimg.com,googlevideo.com,youtube-nocookie.com,youtubei.googleapis.com,yt3.ggpht.com
+piracy|Piracy|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/anti.piracy-onlydomains.txt
+drugs|Drugs|https://blocklistproject.github.io/Lists/alt-version/drugs-nl.txt
+bypass|VPN & DNS bypass|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/doh-vpn-proxy-bypass-onlydomains.txt
+ads|Ads & tracking|https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/pro-onlydomains.txt'
+CAT_DIR() { echo "$APP/.categories"; }
+QL_APP="Query Logs (Sqlite)"; AB_APP="Advanced Blocking"
+QL_DB="/vol/apps/Query Logs (Sqlite)/querylogs.db"
+cat_url() { awk -F'|' -v k="$1" '$1 == k { print $3 }' <<< "$CAT_CATALOG"; }
+cat_core() { awk -F'|' -v k="$1" '$1 == k { print $4 }' <<< "$CAT_CATALOG"; }
+tn_app_installed() { tn apps/list | jq -e --arg n "$1" '.apps[]? | select(.name == $n)' >/dev/null 2>&1; }
+tn_app_install() {   # name — from Technitium's own app store
+  tn_app_installed "$1" && return 0
+  local url; url=$(tn apps/listStoreApps | jq -r --arg n "$1" '.storeApps[]? | select(.name == $n) | .url' 2>/dev/null)
+  [[ "$url" =~ ^https://download\.technitium\.com/ ]] || { TN_WHY="$1 isn't in Technitium's app store"; return 1; }
+  tn apps/downloadAndInstall "name=$1" "url=$url" >/dev/null
+}
+cat_lists_refresh() {   # [force] — the lists, once a day, into a lookup table (domain → category)
+  local d; d=$(CAT_DIR); mkdir -p "$d"
+  [[ -z "${1:-}" ]] && fresh "$d/cats.db" 86400 && return 0
+  local key label url core n=0 tsv="$d/cats.tsv.tmp"; : > "$tsv"
+  while IFS='|' read -r key label url core; do
+    [[ -n "$key" ]] || continue
+    [[ -n "$core" ]] && tr ',' '\n' <<< "$core" | awk -v k="$key" 'NF { print $1 "\t" k }' >> "$tsv"
+    curl -fsL --max-time 120 "$url" 2>/dev/null | tr 'A-Z' 'a-z' \
+      | awk -v k="$key" '{ sub(/\r$/, "") } /^[[:space:]]*($|#|!)/ { next } { d = $NF; sub(/^\*\./, "", d) }
+          d ~ /^[a-z0-9_-]+(\.[a-z0-9_-]+)+$/ && length(d) <= 253 { print d "\t" k }' >> "$tsv" || say "category list $key: not fetched this time"
+  done <<< "$CAT_CATALOG"
+  [[ -s "$tsv" ]] || { rm -f "$tsv"; return 1; }
+  rm -f "$d/cats.db.tmp"
+  # The first list a domain appears in wins (the catalog's order), as INSERT OR IGNORE keeps the first.
+  printf 'CREATE TABLE cat (domain TEXT PRIMARY KEY, cat TEXT NOT NULL) WITHOUT ROWID;\nCREATE TEMP TABLE raw (domain TEXT, cat TEXT);\n.mode tabs\n.import %s raw\nINSERT OR IGNORE INTO cat SELECT domain, cat FROM raw ORDER BY rowid;\n' "$tsv" \
+    | sqlite3 "$d/cats.db.tmp" 2>>"$LOG" && mv "$d/cats.db.tmp" "$d/cats.db" || { rm -f "$d/cats.db.tmp" "$tsv"; return 1; }
+  n=$(sqlite3 "$d/cats.db" 'SELECT count(*) FROM cat' 2>/dev/null); rm -f "$tsv"
+  say "category lists: $n domains"
+}
+cat_stats() {   # the last 24 hours of the query log, per device and category → $VAR/categories.json
+  local d; d=$(CAT_DIR); [[ -s "$d/cats.db" ]] || return 0
+  # Technitium writes the log in WAL mode, so it is read from a read-write mount with sqlite's -readonly.
+  in_volume config rw -- "[ -f \"$QL_DB\" ] && sqlite3 -readonly -separator \"\$(printf '\\t')\" \"$QL_DB\" \"SELECT client_ip, lower(qname), count(*), sum(response_type IN (4,5,6)) FROM dns_logs WHERE qname IS NOT NULL AND timestamp >= datetime((SELECT max(timestamp) FROM dns_logs), '-1 day') GROUP BY 1, 2\"" \
+    </dev/null > "$d/q.tsv.tmp" 2>>"$LOG" || { rm -f "$d/q.tsv.tmp"; return 0; }
+  mv "$d/q.tsv.tmp" "$d/q.tsv"
+  sqlite3 "$d/cats.db" 2>>"$LOG" > "$VAR/categories.json.tmp" <<SQL || { rm -f "$VAR/categories.json.tmp"; return 0; }
+CREATE TEMP TABLE q (client TEXT, qname TEXT, n INTEGER, nb INTEGER);
+.mode tabs
+.import $d/q.tsv q
+.mode list
+CREATE TEMP TABLE m AS
+  WITH RECURSIVE s(client, qname, n, nb, dom, depth) AS (
+    SELECT client, qname, n, nb, qname, 0 FROM q
+    UNION ALL SELECT client, qname, n, nb, substr(dom, instr(dom, '.') + 1), depth + 1 FROM s WHERE instr(dom, '.') > 0 AND depth < 12)
+  SELECT q.client, q.qname, q.n, q.nb,
+         coalesce((SELECT c.cat FROM s JOIN cat c ON c.domain = s.dom WHERE s.client = q.client AND s.qname = q.qname ORDER BY s.depth LIMIT 1), 'other') AS cat
+  FROM q;
+SELECT json_object('at', strftime('%s', 'now') + 0, 'devices', (
+  SELECT json_group_array(json_object('ip', client, 'n', tn, 'nb', tb, 'cats', json(cats))) FROM (
+    SELECT client, sum(n) AS tn, sum(nb) AS tb, (
+      SELECT json_group_object(cat, json_object('n', cn, 'nb', cb, 'top', json(top))) FROM (
+        SELECT cat, sum(n) AS cn, sum(nb) AS cb, (
+          SELECT json_group_array(json_array(qname, n, nb)) FROM (SELECT qname, n, nb FROM m m3 WHERE m3.client = m2.client AND m3.cat = m2.cat ORDER BY n DESC LIMIT 8)) AS top
+        FROM m m2 WHERE m2.client = m1.client GROUP BY cat)) AS cats
+    FROM m m1 GROUP BY client ORDER BY tn DESC LIMIT 200)));
+SQL
+  mv "$VAR/categories.json.tmp" "$VAR/categories.json"; for_window_copy "$VAR/categories.json"
+}
+for_window_copy() { chown "$HOST_UID:$HOST_GID" "$1" 2>/dev/null || true; chmod 600 "$1"; }
+cat_groups() { local g; g=$(env_get CAT_GROUPS_B64); [[ -n "$g" ]] && b64d "$g" || echo '{"groups":[],"default":[]}'; }
+cat_groups_ok() {   # JSON on stdin → valid groups for this catalog (names, members, known categories)
+  local keys; keys=$(awk -F'|' '{print $1}' <<< "$CAT_CATALOG" | jq -R . | jq -s -c .)
+  jq -e --argjson keys "$keys" '
+    def ip: test("^([0-9]{1,3}\\.){3}[0-9]{1,3}(/([0-9]|[12][0-9]|3[0-2]))?$") or test("^[0-9a-fA-F:]{2,39}(/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8]))?$");
+    (.groups | type == "array" and length <= 20) and (.default | type == "array")
+    and ([.default[] | select(. as $k | $keys | index($k) | not)] | length == 0)
+    and all(.groups[]; (.name | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9 ._-]{0,23}$") and (ascii_downcase != "everyone else"))
+        and (.members | type == "array" and length >= 1 and length <= 64 and all(.[]; type == "string" and ip))
+        and (.block | type == "array" and all(.[]; . as $k | $keys | index($k))))
+    and ([.groups[].name | ascii_downcase] | length == (unique | length))' >/dev/null 2>&1
+}
+cat_apply() {   # the groups → Advanced Blocking's whole configuration (it replaces what was there)
+  local g cfg urls; g=$(cat_groups)
+  tn_app_install "$AB_APP" || { MSG="Technitium's Advanced Blocking app couldn't be installed: $TN_WHY"; return 1; }
+  urls=$(while IFS='|' read -r k l u c; do [[ -n "$k" ]] && jq -n -c --arg k "$k" --arg u "$u" --arg c "$c" '{($k): {url: $u, core: ($c | split(",") | map(select(length > 0)))}}'; done <<< "$CAT_CATALOG" | jq -s -c add)
+  cfg=$(jq -c --argjson urls "$urls" '
+    def grp($name; $block): {name: $name, enableBlocking: true, allowTxtBlockingReport: true, blockAsNxDomain: true,
+      blockingAddresses: ["0.0.0.0", "::"], allowed: [], blocked: [$block[] | $urls[.].core[]], allowListUrls: [], blockListUrls: [$block[] | $urls[.].url],
+      allowedRegex: [], blockedRegex: [], regexAllowListUrls: [], regexBlockListUrls: [], adblockListUrls: []};
+    {enableBlocking: true, blockingAnswerTtl: 30, blockListUrlUpdateIntervalHours: 24, blockListUrlUpdateIntervalMinutes: 0,
+     localEndPointGroupMap: {},
+     networkGroupMap: (([.groups[] | .name as $n | .members[] | {(.): $n}] | add // {}) + {"0.0.0.0/0": "everyone else", "[::]/0": "everyone else"}),
+     groups: ([.groups[] | grp(.name; .block)] + [grp("everyone else"; .default)])}' <<< "$g") || { MSG="The groups couldn't be turned into Advanced Blocking's settings."; return 1; }
+  tn apps/config/set "name=$AB_APP" "config=$cfg" >/dev/null || { MSG="Advanced Blocking didn't take the groups: $TN_WHY"; return 1; }
+}
+cat_setup() {   # the query log app, keeping enough for a day's categories
+  tn_app_install "$QL_APP" || { MSG="Technitium's query log app couldn't be installed: $TN_WHY"; return 1; }
+  local c; c=$(tn apps/config/get "name=$QL_APP" | jq -r '.config // empty' 2>/dev/null)
+  [[ -n "$c" ]] || { MSG="The query log app's settings couldn't be read: $TN_WHY"; return 1; }
+  c=$(jq -c '.enableLogging = true | .maxLogDays = ([.maxLogDays, 7] | max) | .maxLogRecords = ([.maxLogRecords, 500000] | max) | .enableVacuum = true' <<< "$c")
+  tn apps/config/set "name=$QL_APP" "config=$c" >/dev/null || { MSG="The query log app didn't take its settings: $TN_WHY"; return 1; }
+}
+cat_state() {   # what the window shows about categories
+  local ql=false ab=false; tn_app_installed "$QL_APP" && ql=true; tn_app_installed "$AB_APP" && ab=true
+  local keys; keys=$(while IFS='|' read -r k l u c; do [[ -n "$k" ]] && jq -n -c --arg k "$k" --arg l "$l" '{key: $k, label: $l}'; done <<< "$CAT_CATALOG" | jq -s -c .)
+  jq -n -c --argjson ql "$ql" --argjson ab "$ab" --argjson cats "$keys" --argjson groups "$(cat_groups)" \
+    --argjson lists "$(stat -c %Y "$(CAT_DIR)/cats.db" 2>/dev/null || echo null)" '{querylog: $ql, advanced: $ab, catalog: $cats, groups: $groups, lists_at: $lists}' \
+    > "$VAR/cat-state.json.tmp" && mv "$VAR/cat-state.json.tmp" "$VAR/cat-state.json"
 }
 
 # ------------------------------------------------------------ lifecycle hooks
@@ -273,8 +390,8 @@ app_status() {
   [[ -s "$VAR/tn-detail.json" ]] || echo '{}' > "$VAR/tn-detail.json"
   jq -c --argjson s "${set:-{\}}" --argjson st "${stats:-{\}}" --arg url "$(env_get APP_URL)" --arg ip "$(env_get LAN_IP)" --arg dport "$(env_get DNS_PORT)" \
      --arg resolver "$(env_get RESOLVER)" --arg up "$(env_get UPSTREAM)" --arg proto "$(env_get DNS_PROTO)" --arg custom "$(env_get CUSTOM_DNS)" \
-     --arg api "$api" --arg net "$(env_get NET_MODE)" --arg bind "$(env_get DNS_BIND)" --arg tls "$(env_get TLS)" --arg tls_source "$(env_get TLS_SOURCE)" --argjson cert "$(cat "$VAR/cert.json" 2>/dev/null || echo null)" \
-     '. + {up: true, url: $url, api: ($api == "1"), dns: {ip: $ip, port: ($dport | tonumber? // 53)}, net: {mode: $net, bind: $bind},
+     --arg api "$api" --argjson cat "$(cat "$VAR/cat-state.json" 2>/dev/null || echo null)" --arg net "$(env_get NET_MODE)" --arg bind "$(env_get DNS_BIND)" --arg tls "$(env_get TLS)" --arg tls_source "$(env_get TLS_SOURCE)" --argjson cert "$(cat "$VAR/cert.json" 2>/dev/null || echo null)" \
+     '. + {up: true, url: $url, api: ($api == "1"), dns: {ip: $ip, port: ($dport | tonumber? // 53)}, net: {mode: $net, bind: $bind}, cat: $cat,
            blocking: {enabled: ($s.enableBlocking // false),
                       until: (($s.temporaryDisableBlockingTill // null) | if . == null then null else (sub("\\.[0-9]+"; "") | fromdateiso8601? // null) end)},
            lists: ($s.blockListUrls // []), list_hours: ($s.blockListUpdateIntervalHours // 24),
@@ -333,6 +450,10 @@ update_app() {
 app_tick() {
   make_admin 1
   svc_up server || return 0
+  if [[ -n "$(env_get TN_TOKEN)" ]] && ! fresh "$VAR/.cat-check" 600; then
+    touch "$VAR/.cat-check"; cat_state
+    if jq -e '.querylog' "$VAR/cat-state.json" >/dev/null 2>&1; then cat_lists_refresh || true; cat_stats || true; fi
+  fi
   # The console's HTTPS as the package says (a restore can bring back other web settings).
   fresh "$VAR/.web-check" 600 || { touch "$VAR/.web-check"; [[ -n "$(env_get TN_TOKEN)" ]] && web_drift && { sync_web || true; }; }
   fresh "$VAR/.cert-check" 86400 && return 0; touch "$VAR/.cert-check"
@@ -485,6 +606,15 @@ app_act() {   # action (request vars are set)
       if [[ "$RESOLVER" == recursive ]]; then MSG="Technitium now finds every answer itself, from the internet's root servers — no upstream service sees your lookups."
       else forwarders_for "$(env_get UPSTREAM)" "$(env_get DNS_PROTO)" "$(env_get CUSTOM_DNS)"
         MSG="Technitium now asks $(case "$(env_get UPSTREAM)" in cloudflare) echo Cloudflare ;; quad9) echo Quad9 ;; google) echo Google ;; *) sed 's/,/ and /' <<< "$FW" ;; esac) over $(case "$FWP" in Https) echo "DNS-over-HTTPS (encrypted)" ;; Tls) echo "DNS-over-TLS (encrypted)" ;; *) echo "plain DNS" ;; esac)."; fi ;;
+    catsetup)
+      cat_setup || return 1; cat_lists_refresh || true; cat_state; rm -f "$VAR/.cat-check"
+      MSG="Category stats are on: Technitium logs each lookup, and the Categories tab fills in within ten minutes." ;;
+    catgroups)
+      local g; g=$(b64d "${GROUPS_B64:-}")
+      cat_groups_ok <<< "$g" || { MSG="Those groups aren't valid."; return 1; }
+      env_set CAT_GROUPS_B64 "$(jq -c . <<< "$g" | base64 -w0 | tr '+/' '-_' | tr -d '=')"
+      cat_apply || return 1; cat_state
+      MSG="Saved: $(jq -r '[.groups | length | tostring, " group(s)"] | add' <<< "$g") and everyone else, blocking as set. Technitium fetches the lists in a minute." ;;
     newpw)
       pw=$(strong_password)
       tn admin/users/set user=admin "newPass=$pw" >/dev/null || { MSG="The password wasn't changed: $TN_WHY"; return 1; }

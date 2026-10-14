@@ -48,6 +48,14 @@ gateway; switching makes the container again, with DNS away for a few seconds.
 On the NAS's own network the package's HTTPS for the console is off (DSM's
 reverse proxy can add it).
 
+**Categories.** The Categories tab shows what each device looks up, sorted
+into ten categories from public lists (HaGeZi's DNS blocklists and the Block
+List Project), and blocks whole categories per group of devices through
+Technitium's Advanced Blocking app. Lookups that no list knows show as
+"Other". There's no maintained public list for gaming, so it isn't offered.
+Devices show by their own address only on the NAS's own network (Site address
+→ Network).
+
 Then point your network at it. In your router's DHCP/LAN settings, set the DNS
 server to the Synology's address, as the only DNS server. The Setup tab walks
 you through it.
